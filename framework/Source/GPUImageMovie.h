@@ -56,7 +56,6 @@
 - (void)startProcessing;
 - (void)endProcessing;
 - (void)cancelProcessing;
-- (void)processMovieFrame:(CMSampleBufferRef)movieSampleBuffer;
-- (void)forceNewFrameToTargets;
+- (void)processMovieFrame:(CMSampleBufferRef)movieSampleBuffer; 
 
 @end

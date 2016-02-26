@@ -13,13 +13,13 @@
     {
         return nil;
     }
-    
+
     return self;
 }
 
 - (id)initWithData:(NSData *)imageData;
 {
-    UIImage *inputImage = [[UIImage alloc] initWithData:imageData];
+    NSImage *inputImage = [[NSImage alloc] initWithData:imageData];
     
     if (!(self = [self initWithImage:inputImage]))
     {
@@ -29,7 +29,7 @@
     return self;
 }
 
-- (id)initWithImage:(UIImage *)newImageSource;
+- (id)initWithImage:(NSImage *)newImageSource;
 {
     if (!(self = [self initWithImage:newImageSource smoothlyScaleOutput:NO]))
     {
@@ -48,32 +48,12 @@
     return self;
 }
 
-- (id)initWithImage:(UIImage *)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput;
+- (id)initWithImage:(NSImage *)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput;
 {
-    return [self initWithCGImage:[newImageSource CGImage] smoothlyScaleOutput:smoothlyScaleOutput];
+    return [self initWithCGImage:[newImageSource CGImageForProposedRect:NULL context:NULL hints:nil] smoothlyScaleOutput:smoothlyScaleOutput];
 }
 
 - (id)initWithCGImage:(CGImageRef)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput;
-{
-    return [self initWithCGImage:newImageSource smoothlyScaleOutput:smoothlyScaleOutput removePremultiplication:NO];
-}
-
-- (id)initWithImage:(UIImage *)newImageSource removePremultiplication:(BOOL)removePremultiplication;
-{
-    return [self initWithCGImage:[newImageSource CGImage] smoothlyScaleOutput:NO removePremultiplication:removePremultiplication];
-}
-
-- (id)initWithCGImage:(CGImageRef)newImageSource removePremultiplication:(BOOL)removePremultiplication;
-{
-    return [self initWithCGImage:newImageSource smoothlyScaleOutput:NO removePremultiplication:removePremultiplication];
-}
-
-- (id)initWithImage:(UIImage *)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput removePremultiplication:(BOOL)removePremultiplication;
-{
-    return [self initWithCGImage:[newImageSource CGImage] smoothlyScaleOutput:smoothlyScaleOutput removePremultiplication:removePremultiplication];
-}
-
-- (id)initWithCGImage:(CGImageRef)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput removePremultiplication:(BOOL)removePremultiplication;
 {
     if (!(self = [super init]))
     {
@@ -82,14 +62,12 @@
     
     hasProcessedImage = NO;
     self.shouldSmoothlyScaleOutput = smoothlyScaleOutput;
-    imageUpdateSemaphore = dispatch_semaphore_create(0);
-    dispatch_semaphore_signal(imageUpdateSemaphore);
-
-
+    imageUpdateSemaphore = dispatch_semaphore_create(1);
+    
     // TODO: Dispatch this whole thing asynchronously to move image loading off main thread
     CGFloat widthOfImage = CGImageGetWidth(newImageSource);
     CGFloat heightOfImage = CGImageGetHeight(newImageSource);
-
+    
     // If passed an empty image reference, CGContextDrawImage will fail in future versions of the SDK.
     NSAssert( widthOfImage > 0 && heightOfImage > 0, @"Passed image must not be empty - it should be at least 1px tall and wide");
     
@@ -119,12 +97,9 @@
     }
     
     GLubyte *imageData = NULL;
-    CFDataRef dataFromImageDataProvider = NULL;
+    CFDataRef dataFromImageDataProvider;
     GLenum format = GL_BGRA;
-    BOOL isLitteEndian = YES;
-    BOOL alphaFirst = NO;
-    BOOL premultiplied = NO;
-	
+    
     if (!shouldRedrawUsingCoreGraphics) {
         /* Check that the memory layout is compatible with GL, as we cannot use glPixelStore to
          * tell GL about the memory layout with GLES.
@@ -150,7 +125,6 @@
                         shouldRedrawUsingCoreGraphics = YES;
                     }
                 } else if (byteOrderInfo == kCGBitmapByteOrderDefault || byteOrderInfo == kCGBitmapByteOrder32Big) {
-					isLitteEndian = NO;
                     /* Big endian, for alpha-last we can use this bitmap directly in GL */
                     CGImageAlphaInfo alphaInfo = bitmapInfo & kCGBitmapAlphaInfoMask;
                     if (alphaInfo != kCGImageAlphaPremultipliedLast && alphaInfo != kCGImageAlphaLast &&
@@ -158,9 +132,7 @@
                         shouldRedrawUsingCoreGraphics = YES;
                     } else {
                         /* Can access directly using GL_RGBA pixel format */
-						premultiplied = alphaInfo == kCGImageAlphaPremultipliedLast || alphaInfo == kCGImageAlphaPremultipliedLast;
-						alphaFirst = alphaInfo == kCGImageAlphaFirst || alphaInfo == kCGImageAlphaPremultipliedFirst;
-						format = GL_RGBA;
+                        format = GL_RGBA;
                     }
                 }
             }
@@ -181,9 +153,6 @@
         CGContextDrawImage(imageContext, CGRectMake(0.0, 0.0, pixelSizeToUseForTexture.width, pixelSizeToUseForTexture.height), newImageSource);
         CGContextRelease(imageContext);
         CGColorSpaceRelease(genericRGBColorspace);
-		isLitteEndian = YES;
-		alphaFirst = YES;
-		premultiplied = YES;
     }
     else
     {
@@ -191,45 +160,7 @@
         dataFromImageDataProvider = CGDataProviderCopyData(CGImageGetDataProvider(newImageSource));
         imageData = (GLubyte *)CFDataGetBytePtr(dataFromImageDataProvider);
     }
-	
-	if (removePremultiplication && premultiplied) {
-		NSUInteger	totalNumberOfPixels = round(pixelSizeToUseForTexture.width * pixelSizeToUseForTexture.height);
-		uint32_t	*pixelP = (uint32_t *)imageData;
-		uint32_t	pixel;
-		CGFloat		srcR, srcG, srcB, srcA;
-
-		for (NSUInteger idx=0; idx<totalNumberOfPixels; idx++, pixelP++) {
-			pixel = isLitteEndian ? CFSwapInt32LittleToHost(*pixelP) : CFSwapInt32BigToHost(*pixelP);
-
-			if (alphaFirst) {
-				srcA = (CGFloat)((pixel & 0xff000000) >> 24) / 255.0f;
-			}
-			else {
-				srcA = (CGFloat)(pixel & 0x000000ff) / 255.0f;
-				pixel >>= 8;
-			}
-
-			srcR = (CGFloat)((pixel & 0x00ff0000) >> 16) / 255.0f;
-			srcG = (CGFloat)((pixel & 0x0000ff00) >> 8) / 255.0f;
-			srcB = (CGFloat)(pixel & 0x000000ff) / 255.0f;
-			
-			srcR /= srcA; srcG /= srcA; srcB /= srcA;
-			
-			pixel = (uint32_t)(srcR * 255.0) << 16;
-			pixel |= (uint32_t)(srcG * 255.0) << 8;
-			pixel |= (uint32_t)(srcB * 255.0);
-
-			if (alphaFirst) {
-				pixel |= (uint32_t)(srcA * 255.0) << 24;
-			}
-			else {
-				pixel <<= 8;
-				pixel |= (uint32_t)(srcA * 255.0);
-			}
-			*pixelP = isLitteEndian ? CFSwapInt32HostToLittle(pixel) : CFSwapInt32HostToBig(pixel);
-		}
-	}
-	
+    
     //    elapsedTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0;
     //    NSLog(@"Core Graphics drawing time: %f", elapsedTime);
     
@@ -251,7 +182,7 @@
         
         outputFramebuffer = [[GPUImageContext sharedFramebufferCache] fetchFramebufferForSize:pixelSizeToUseForTexture onlyTexture:YES];
         [outputFramebuffer disableReferenceCounting];
-
+        
         glBindTexture(GL_TEXTURE_2D, [outputFramebuffer texture]);
         if (self.shouldSmoothlyScaleOutput)
         {
@@ -273,28 +204,25 @@
     }
     else
     {
-        if (dataFromImageDataProvider)
-        {
-            CFRelease(dataFromImageDataProvider);
-        }
+        CFRelease(dataFromImageDataProvider);
     }
     
     return self;
 }
 
-// ARC forbids explicit message send of 'release'; since iOS 6 even for dispatch_release() calls: stripping it out in that case is required.
+// ARC forbids explicit message send of 'release' on Mountain Lion, but needs this on Lion and older
+#if ( (MAC_OS_X_VERSION_MIN_REQUIRED < __MAC_10_8) || (!defined(__MAC_10_8)) )
 - (void)dealloc;
 {
     [outputFramebuffer enableReferenceCounting];
     [outputFramebuffer unlock];
 
-#if !OS_OBJECT_USE_OBJC
     if (imageUpdateSemaphore != NULL)
     {
         dispatch_release(imageUpdateSemaphore);
     }
-#endif
 }
+#endif
 
 #pragma mark -
 #pragma mark Image rendering
@@ -321,7 +249,7 @@
         return NO;
     }
     
-    runAsynchronouslyOnVideoProcessingQueue(^{        
+    runAsynchronouslyOnVideoProcessingQueue(^{
         for (id<GPUImageInput> currentTarget in targets)
         {
             NSInteger indexOfObject = [targets indexOfObject:currentTarget];
@@ -343,11 +271,11 @@
     return YES;
 }
 
-- (void)processImageUpToFilter:(GPUImageOutput<GPUImageInput> *)finalFilterInChain withCompletionHandler:(void (^)(UIImage *processedImage))block;
+- (void)processImageUpToFilter:(GPUImageOutput<GPUImageInput> *)finalFilterInChain withCompletionHandler:(void (^)(NSImage *processedImage))block;
 {
     [finalFilterInChain useNextFrameForImageCapture];
     [self processImageWithCompletionHandler:^{
-        UIImage *imageFromFilter = [finalFilterInChain imageFromCurrentFramebuffer];
+        NSImage *imageFromFilter = [finalFilterInChain imageFromCurrentFramebuffer];
         block(imageFromFilter);
     }];
 }
